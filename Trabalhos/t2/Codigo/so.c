@@ -302,7 +302,7 @@ static void so_chamada_mata_proc(so_t *self);
 static void so_chamada_espera_proc(so_t *self);
 
 static void so_trata_irq_chamada_sistema(so_t *self)
-{
+{ 
   // a identificação da chamada está no registrador A
   // t2: com processos, o reg A deve estar no descritor do processo corrente
   int id_chamada = self->regA;
