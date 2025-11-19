@@ -13,9 +13,11 @@
 #include "irq.h"
 #include "memoria.h"
 #include "programa.h"
+#include "processo.h"
 
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdio.h> 
 
 
 // ---------------------------------------------------------------------
@@ -121,18 +123,17 @@ static int so_trata_interrupcao(void *argC, int reg_A)
 
 static void so_salva_estado_da_cpu(so_t *self)
 {
-  // t2: salva os registradores que compõem o estado da cpu no descritor do
-  //   processo corrente. os valores dos registradores foram colocados pela
-  //   CPU na memória, nos endereços CPU_END_PC etc. O registrador X foi salvo
-  //   pelo tratador de interrupção (ver trata_irq.asm) no endereço 59
-  // se não houver processo corrente, não faz nada
-  if (mem_le(self->mem, CPU_END_A, &self->regA) != ERR_OK
-      || mem_le(self->mem, CPU_END_PC, &self->regPC) != ERR_OK
-      || mem_le(self->mem, CPU_END_erro, &self->regERRO) != ERR_OK
-      || mem_le(self->mem, 59, &self->regX)) {
-    console_printf("SO: erro na leitura dos registradores");
-    self->erro_interno = true;
-  }
+  if (processo_atual == -1) return;
+  
+  // Salva estado nos registradores do processo atual
+  mem_le(self->mem, CPU_END_A, &tabela_processos[processo_atual].a_salvo);
+  mem_le(self->mem, CPU_END_PC, &tabela_processos[processo_atual].pc_salvo); 
+  mem_le(self->mem, CPU_END_erro, &self->regERRO);
+  mem_le(self->mem, 59, &tabela_processos[processo_atual].x_salvo);
+  
+  printf("SO: Salvou estado do PID=%d (PC=%d)\n", 
+         tabela_processos[processo_atual].pid,
+         tabela_processos[processo_atual].pc_salvo);
 }
 
 static void so_trata_pendencias(so_t *self)
@@ -147,29 +148,52 @@ static void so_trata_pendencias(so_t *self)
 
 static void so_escalona(so_t *self)
 {
-  // escolhe o próximo processo a executar, que passa a ser o processo
-  //   corrente; pode continuar sendo o mesmo de antes ou não
-  // t2: na primeira versão, escolhe um processo pronto caso o processo
-  //   corrente não possa continuar executando, senão deixa o mesmo processo.
-  //   depois, implementa um escalonador melhor
+  printf("SO: Escalonando... processo_atual=%d\n", processo_atual);
+  
+  // Se processo atual ainda está PRONTO, continua nele
+  if (processo_atual != -1 && 
+      tabela_processos[processo_atual].estado == PRONTO) {
+    tabela_processos[processo_atual].estado = EXECUTANDO;
+    printf("SO: Continua no PID=%d\n", tabela_processos[processo_atual].pid);
+    return;
+  }
+  
+  // Procura primeiro processo PRONTO
+  for (int i = 0; i < MAX_PROCESSOS; i++) {
+    if (tabela_processos[i].estado == PRONTO) {
+      if (processo_atual != -1) {
+        tabela_processos[processo_atual].estado = PRONTO;  // Tira da CPU
+      }
+      processo_atual = i;
+      tabela_processos[i].estado = EXECUTANDO;
+      printf("SO: Escalonou PID=%d\n", tabela_processos[i].pid);
+      return;
+    }
+  }
+  
+  // Nenhum processo pronto
+  printf("SO: Nenhum processo pronto\n");
+  processo_atual = -1;
 }
 
 static int so_despacha(so_t *self)
 {
-  // t2: se houver processo corrente, coloca o estado desse processo onde ele
-  //   será recuperado pela CPU (em CPU_END_PC etc e 59) e retorna 0,
-  //   senão retorna 1
-  // o valor retornado será o valor de retorno de CHAMAC, e será colocado no 
-  //   registrador A para o tratador de interrupção (ver trata_irq.asm).
-  if (mem_escreve(self->mem, CPU_END_A, self->regA) != ERR_OK
-      || mem_escreve(self->mem, CPU_END_PC, self->regPC) != ERR_OK
-      || mem_escreve(self->mem, CPU_END_erro, self->regERRO) != ERR_OK
-      || mem_escreve(self->mem, 59, self->regX)) {
-    console_printf("SO: erro na escrita dos registradores");
-    self->erro_interno = true;
+  if (processo_atual == -1) {
+    printf("SO: Nenhum processo para despachar\n");
+    return 1;  // CPU para
   }
-  if (self->erro_interno) return 1;
-  else return 0;
+  
+  // Recupera estado do processo atual
+  mem_escreve(self->mem, CPU_END_A, tabela_processos[processo_atual].a_salvo);
+  mem_escreve(self->mem, CPU_END_PC, tabela_processos[processo_atual].pc_salvo);
+  mem_escreve(self->mem, CPU_END_erro, self->regERRO);
+  mem_escreve(self->mem, 59, tabela_processos[processo_atual].x_salvo);
+  
+  printf("SO: Despachou PID=%d (PC=%d)\n", 
+         tabela_processos[processo_atual].pid,
+         tabela_processos[processo_atual].pc_salvo);
+         
+  return 0;  // CPU continua
 }
 
 
@@ -247,9 +271,14 @@ static void so_trata_reset(so_t *self)
   }
 
   // altera o PC para o endereço de carga
-  self->regPC = ender; // deveria ser no processo
+  processos_inicia();
+  int idx = processo_cria(1, 0, 1);  // PID 1, terminal 0 e 1
+  if (idx != -1) {
+      processo_atual = idx;
+      tabela_processos[idx].estado = EXECUTANDO;
+      tabela_processos[idx].pc_salvo = ender;  // PC inicial do init
+  }
 }
-
 // interrupção gerada quando a CPU identifica um erro
 static void so_trata_irq_err_cpu(so_t *self)
 {
